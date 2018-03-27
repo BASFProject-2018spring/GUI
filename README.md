@@ -1,0 +1,1 @@
+Compile using 'sbt assembly', make sure there is 'nematodes.cfg' file in the home directory with correct configurations. The run.sh under script folder is useful for updating the gui.
