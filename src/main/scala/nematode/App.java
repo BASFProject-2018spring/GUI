@@ -21,7 +21,7 @@ public class App extends Application {
         MainController controller = loader.getController();
         controller.setStage(primaryStage);
 
-        Scene scene = new Scene(root, 600, 500);
+        Scene scene = new Scene(root, 600, 600);
         primaryStage.setTitle("Nematode Classifier");
         primaryStage.setScene(scene);
         primaryStage.show();

@@ -28,11 +28,13 @@ case object RunFX {
   }
 }
 
-class TableItem(@BeanProperty var image: String, @BeanProperty var inferenceCount: String, @BeanProperty var labelCount: String) {
+class TableItem(@BeanProperty var image: String, @BeanProperty var inferenceCount: String, @BeanProperty var labelCount: String, @BeanProperty var correctedCount: String) {
 
 }
 
 class MainController {
+  val threshold: Float = 0.7f
+
   @FXML
   protected var openInputFolder: Button = _
   @FXML
@@ -58,8 +60,6 @@ class MainController {
   @FXML
   protected var updateStatus: ListView[String] = _
   @FXML
-  protected var threshold: TextField = _
-  @FXML
   protected var countTable: TableView[TableItem] = _
   @FXML
   protected var calculate: Button = _
@@ -68,7 +68,17 @@ class MainController {
   @FXML
   protected var r2Val: javafx.scene.control.Label = _
   @FXML
+  protected var r2ValCorrected: javafx.scene.control.Label = _
+  @FXML
   protected var inferenceLog: ListView[String] = _
+  @FXML
+  protected var imageFolderForEPC: TextField = _
+  @FXML
+  protected var browseImageFolderForEPC: Button = _
+  @FXML
+  protected var exportCorrectedCounts: Button = _
+  @FXML
+  protected var endpointCorrection: Button = _
 
   private var updating: Boolean = false
   private var inferring: Boolean = false
@@ -77,6 +87,7 @@ class MainController {
 
   private var labels: Labels = Labels(Map.empty)
   private var inferences: Inferences = Inferences(Map.empty)
+  private var correctedCounts: Counts = Counts(Map.empty)
 
   def setStage(stage: Stage): Unit = {
     this.stage = stage
@@ -92,6 +103,7 @@ class MainController {
 
   protected val labelFolderChooser = new DirectoryChooser()
   protected val inferenceFolderChooser = new DirectoryChooser()
+  protected val imageFolderForEPCChooser = new DirectoryChooser()
   protected val exportFileChooser = new FileChooser()
 
   protected def export(): Unit = {
@@ -99,11 +111,16 @@ class MainController {
     val buffer = collection.mutable.Buffer[String]()
     buffer.append("image,count")
 
-    val thres = Try(threshold.getText.toFloat).getOrElse(0.7f)
+    inferences.toCounts(threshold).counts.map(kv => s"${kv._1}, ${kv._2}").foreach(s => buffer.append(s))
+    Files.write(file.toPath, buffer.asJava)
+  }
 
-    threshold.setText(thres.toString)
+  protected def exportCorrected(): Unit = {
+    val file = exportFileChooser.showSaveDialog(stage)
+    val buffer = collection.mutable.Buffer[String]()
+    buffer.append("image,count")
 
-    inferences.toCounts(thres).counts.map(kv => s"${kv._1}, ${kv._2}").foreach(s => buffer.append(s))
+    correctedCounts.counts.map(kv => s"${kv._1}, ${kv._2}").foreach(s => buffer.append(s))
     Files.write(file.toPath, buffer.asJava)
   }
 
@@ -169,7 +186,6 @@ class MainController {
       )
   }
 
-
   protected def update(): Unit = {
     if (updating) {
       updateStatus.getItems.add(0, "Already running")
@@ -234,23 +250,44 @@ class MainController {
 
   protected def updateCounts(): Unit = {
     RunFX {
-      val thres = Try(threshold.getText.toFloat).getOrElse(0.7f)
 
-      threshold.setText(thres.toString)
-
-      val counts = inferences.toCounts(thres).merge(labels.toCounts)
+      val counts = inferences.toCounts(threshold).merge(labels.toCounts, correctedCounts)
 
       val tableItems = counts.keys.toList.sorted.map(
-        k => new TableItem(k, counts(k)._1.map(_.toString).getOrElse("N/A"), counts(k)._2.map(_.toString).getOrElse("N/A"))
+        k => new TableItem(k, counts(k)._1.map(_.toString).getOrElse("N/A"), counts(k)._2.map(_.toString).getOrElse("N/A"), counts(k)._3.map(_.toString).getOrElse("N/A"))
       )
       val ol = FXCollections.observableArrayList(tableItems.asJava)
 
       countTable.setItems(ol)
 
-      val r2 = Labels.getR2(counts)
+      val (r2, r2_corrected) = Labels.getR2(counts)
       val r2Str = r2.map(_.toString).getOrElse("N/A")
+      val r2CorrectedStr = r2_corrected.map(_.toString).getOrElse("N/A")
       r2Val.setText(r2Str)
+      r2ValCorrected.setText(r2CorrectedStr)
     }
+  }
+
+  protected def applyEndpointCorrection(): Unit = {
+    // TODO: EPC is not robust on new batches, so for now we don't incorporate EPC into the model
+    val imageFolder = imageFolderForEPC.getText
+    val labelFolder = inferenceFolder.getText
+    val targetCSV = Paths.get(inferenceFolder.getText(), "corrected.csv").toString
+    correctedCounts = inferences.toCounts(threshold)
+
+    // TODO: execute command
+    val sh = Paths.get(Config.appFolder, "epc.sh")
+    import java.nio.file.attribute.PosixFilePermission
+    val perms = Set(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE,
+      PosixFilePermission.GROUP_READ, PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE,
+      PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_EXECUTE)
+    Files.setPosixFilePermissions(sh, perms.asJava)
+    val p = sys.process.Process(sh.toString + s" \"$imageFolder\" \"$labelFolder\" \"$targetCSV\" $threshold")
+
+    // p.run().exitValue()
+    // correctedCounts = Labels.loadCorrectedCounts(targetCSV)
+
+    updateCounts()
   }
 
   def initialize(): Unit = {
@@ -263,6 +300,10 @@ class MainController {
 
     browseLabelFolder.setOnAction((_) => labelFolder.setText(Option(labelFolderChooser.showDialog(stage)).map(_.toString).getOrElse(labelFolder.getText)))
     browseInferenceFolder.setOnAction((_) => inferenceFolder.setText(Option(inferenceFolderChooser.showDialog(stage)).map(_.toString).getOrElse(inferenceFolder.getText)))
+    browseImageFolderForEPC.setOnAction((_) => imageFolderForEPC.setText(Option(imageFolderForEPCChooser.showDialog(stage)).map(_.toString).getOrElse(imageFolderForEPC.getText)))
+
+    imageFolderForEPC.setText(Config.inputFolder)
+    imageFolderForEPCChooser.setInitialDirectory(Paths.get(Config.inputFolder).toFile)
 
     updateBtn.setOnAction(_ => update())
 
@@ -274,7 +315,8 @@ class MainController {
     })
 
     loadInferenceFolder.setOnAction(_ => {
-      inferences = Labels.loadInferences(inferenceFolder.getText)
+      inferences = Labels.loadInferences(inferenceFolder.getText())
+      correctedCounts = Labels.loadCorrectedCounts(Paths.get(inferenceFolder.getText(), "corrected.csv").toString)
       updateCounts()
     })
 
@@ -283,15 +325,21 @@ class MainController {
     val imageColumn = new control.TableColumn[TableItem, String]("Image ID")
     val inferenceCountColumn = new control.TableColumn[TableItem, String]("Inferred Count")
     val labelCountColumn = new control.TableColumn[TableItem, String]("Labeled Count")
+    val correctedCountColumn = new control.TableColumn[TableItem, String]("Corrected Count")
     imageColumn.setCellValueFactory(new cell.PropertyValueFactory[TableItem, String]("image"))
     inferenceCountColumn.setCellValueFactory(new cell.PropertyValueFactory[TableItem, String]("inferenceCount"))
     labelCountColumn.setCellValueFactory(new cell.PropertyValueFactory[TableItem, String]("labelCount"))
+    correctedCountColumn.setCellValueFactory(new cell.PropertyValueFactory[TableItem, String]("correctedCount"))
     countTable.getColumns.add(imageColumn)
-    countTable.getColumns.add(inferenceCountColumn)
     countTable.getColumns.add(labelCountColumn)
+    countTable.getColumns.add(inferenceCountColumn)
+    countTable.getColumns.add(correctedCountColumn)
 
     updateVersionString()
 
     exportInferredCounts.setOnAction(_ => export())
+    exportCorrectedCounts.setOnAction(_ => exportCorrected())
+
+    endpointCorrection.setOnAction(_ => applyEndpointCorrection())
   }
 }

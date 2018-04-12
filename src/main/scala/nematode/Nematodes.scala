@@ -60,8 +60,17 @@ object Labels {
     ))
   }
 
-  def getR2(mergedCounts: Map[String, (Option[Int], Option[Int])]): Option[Double] = {
-    val values = mergedCounts.filter(kv => kv._2._1.isDefined && kv._2._2.isDefined).mapValues(v => (v._1.get, v._2.get)).values
+  def loadCorrectedCounts(filePath: String): Counts = {
+    // TODO implement load counts
+    val file = Paths.get(filePath).toFile
+    if (!file.exists()) {
+      return Counts(Map.empty)
+    }
+    val map = Files.readAllLines(file.toPath).asScala.drop(1).map(s => s.split(',')).map(a => (a(0), a(1).toInt)).toMap
+    Counts(map)
+  }
+
+  private def getR2(values: Iterable[(Int, Int)]): Option[Double] = {
     if (values.isEmpty) {
       return None
     }
@@ -70,6 +79,12 @@ object Labels {
     val mean = tv.sum.toDouble / tv.size.toDouble
     val ss_tot = tv.map(v => v - mean).map(math.pow(_, 2)).sum
     Some(1 - ss_res / ss_tot)
+  }
+
+  def getR2(mergedCounts: Map[String, (Option[Int], Option[Int], Option[Int])]): (Option[Double], Option[Double]) = {
+    val values1 = mergedCounts.filter(kv => kv._2._1.isDefined && kv._2._2.isDefined).mapValues(v => (v._1.get, v._2.get)).values
+    val values2 = mergedCounts.filter(kv => kv._2._1.isDefined && kv._2._3.isDefined).mapValues(v => (v._3.get, v._2.get)).values
+    (getR2(values1), getR2(values2))
   }
 }
 
@@ -81,17 +96,26 @@ case class Counts(counts: Map[String, Int]) {
     * Merge the counts in this instance with the counts in the 'right' parameter. The resulting map will contain the
     * union of two merges. The values become tuples of Options. ._1 stores the count in the left (if defined) and
     * ._2 stores the count in the right (if defined).
-    * @param right the counts to be merged with
+    *
+    * @param right1 the counts to be merged with
+    * @param right2 the counts to merged with
     * @return a map of image ids to tuples of Options
     */
-  def merge(right: Counts): Map[String, (Option[Int], Option[Int])] = {
-    val mmap = scala.collection.mutable.Map[String, (Option[Int], Option[Int])]()
-    counts.map(kv => mmap.put(kv._1, (Some(kv._2), None)))
-    right.counts.map(kv => {
+  def merge(right1: Counts, right2: Counts): Map[String, (Option[Int], Option[Int], Option[Int])] = {
+    val mmap = scala.collection.mutable.Map[String, (Option[Int], Option[Int], Option[Int])]()
+    counts.map(kv => mmap.put(kv._1, (Some(kv._2), None, None)))
+    right1.counts.map(kv => {
       if (mmap.contains(kv._1)) {
-        mmap.put(kv._1, (mmap(kv._1)._1, Some(kv._2)))
+        mmap.put(kv._1, (mmap(kv._1)._1, Some(kv._2), None))
       } else {
-        mmap.put(kv._1, (None, Some(kv._2)))
+        mmap.put(kv._1, (None, Some(kv._2), None))
+      }
+    })
+    right2.counts.map(kv => {
+      if (mmap.contains(kv._1)) {
+        mmap.put(kv._1, (mmap(kv._1)._1, mmap(kv._1)._2, Some(kv._2)))
+      } else {
+        mmap.put(kv._1, (None, None, Some(kv._2)))
       }
     })
     mmap.toMap
@@ -118,15 +142,17 @@ case class Inferences(inferences: Map[String, List[Inference]]) {
 
 /**
   * Represents a labeled bounding box
+  *
   * @param boundingBox the bounding box
-  * @param label whether the bounding box is labeled as interested
+  * @param label       whether the bounding box is labeled as interested
   */
 case class Label(boundingBox: BoundingBox, label: Boolean)
 
 /**
   * Represents an inference result of a bounding box
+  *
   * @param boundingBox the bounding box
-  * @param confidence level of confidence that the nematode inscribed by the bounding box is an interested nematode
+  * @param confidence  level of confidence that the nematode inscribed by the bounding box is an interested nematode
   */
 case class Inference(boundingBox: BoundingBox, confidence: Float)
 
